@@ -1,0 +1,12 @@
+__pycache__
+*.log
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.crt
+*.csr
+*.key
+*.pem
+*.env
+*.png
