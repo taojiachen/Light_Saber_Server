@@ -20,7 +20,6 @@ client = Ark(
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
-
 async def async_create_response(model: str, input_messages: list):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -28,15 +27,56 @@ async def async_create_response(model: str, input_messages: list):
         lambda: client.responses.create(model=model, input=input_messages)
     )
 
+def build_json_prompt(user_description: str, previous_json: dict = None) -> str:
+    # 基础字段说明（共用）
+    field_desc = """
+【字段说明及映射规则】
+- type: 固定为 0。
+- duration: 整体效果持续时间，单位毫秒。根据用户描述的“快慢”、“长短”决定。  
+  快速闪烁/短时间 → 1000~5000；中等 → 5000~15000；长时间呼吸/缓慢变化 → 15000~60000。
+- cycles: 重复次数。用户说“重复几次”、“循环”等。若未明确，默认 10。
+- style: 视觉效果风格（整数 0~3）。  
+  0=呼吸灯、两种颜色之间的缓慢过渡，如果没有强调哪种颜色和哪种颜色之间渐变，默认和黑色
+  1=快速闪烁、两种颜色之间的瞬间切换，如果没有强调哪种颜色和哪种颜色之间闪烁，默认和黑色
+  2=流水灯
+  3=脉冲
+  根据用户描述中的关键词选择最接近的。例如“流水灯”或“彩虹” → 2。
+- color_st: 起始颜色 RGB 数组 [R,G,B]，每个 0-255。根据用户描述的开始颜色或主色调。
+- color_ed: 结束颜色 RGB 数组。若描述为单色闪烁，则与 color_st 相同；渐变则设为目标色。
+- music: 固定为 "swing_2s"。
+- pram.surge_intensity: 强度/功率 0-100。用户说“强/猛/亮/爆闪”则 80-100；“柔和/弱/暗”则 0-30；中等 40-70。
+"""
 
-def build_json_prompt(user_description: str) -> str:
-    """
-    构建提示词：将用户的自然语言描述转换为光剑控制 JSON。
-    """
-    prompt = f"""你是一个专门将自然语言指令转换为光剑灯光/声音控制 JSON 的助手。
+    if previous_json:
+        prompt = f"""你是一个专门将自然语言指令转换为光剑灯光/声音控制 JSON 的助手。
+
+【上一次生成的光效 JSON】
+{json.dumps(previous_json, ensure_ascii=False, indent=2)}
+
+【用户最新描述】
+{user_description}
+
+【意图判断】
+- 如果用户描述中包含“修改”、“调整”、“改变”、“再”、“更”、“换成”、“改”等明显表示修改的词语，或者描述的内容与上一次效果有直接关联（例如“快一点”、“亮一些”、“颜色变成蓝色”），则**基于上一次 JSON 进行修改**，只改动用户提到的字段，其余保持不变。
+- 如果用户描述是一个全新的效果名称（如“流水灯”、“呼吸灯”、“彩虹”、“爆闪”、“波浪”、“渐变”等），或者描述的内容与上一次完全无关，则**忽略上一次 JSON，完全重新生成**一个新的 JSON。
+
+请根据上述判断，执行相应操作，并输出完整的 JSON。
+
+{field_desc}
+
+【输出要求】
+- 只输出纯 JSON 字符串，不要有任何额外文字、注释或 Markdown 标记。
+- 必须严格符合上述 JSON 结构（{{"type":0, "data":{{...}}}}）。
+- 如果重新生成，请根据描述合理填充所有字段。
+
+请直接输出 JSON："""
+    else:
+        prompt = f"""你是一个专门将自然语言指令转换为光剑灯光/声音控制 JSON 的助手。
 
 【用户描述】
 {user_description}
+
+请根据描述生成一个符合以下格式的 JSON。
 
 【目标 JSON 格式】
 {{
@@ -54,34 +94,17 @@ def build_json_prompt(user_description: str) -> str:
     }}
 }}
 
-【字段说明及映射规则】
-- type: 固定为 0。
-- duration: 整体效果持续时间，单位毫秒。根据用户描述的“快慢”、“长短”决定。  
-  快速闪烁/短时间 → 1000~5000；中等 → 5000~15000；长时间呼吸/缓慢变化 → 15000~60000。
-- cycles: 重复次数。用户说“重复几次”、“循环”等。若未明确，根据 duration 和单个周期估算，也可默认 10。
-- style: 视觉效果风格（整数 0~3）。  
-  0=柔和渐变（呼吸灯、缓慢过渡）  
-  1=活泼跳变（快速闪烁、彩色切换）  
-  2=奇幻波浪（流水灯、彩虹滚动）  
-  3=科技脉冲（硬边、高频爆闪）  
-  根据用户描述中的形容词选择最接近的。
-- color_st: 起始颜色 RGB 数组 [R,G,B]，每个 0-255。根据用户描述的开始颜色或主色调。
-- color_ed: 结束颜色 RGB 数组。若描述为单色闪烁，则与 color_st 相同；渐变则设为目标色。
-- music: 固定为 "swing_2s"（音频文件名，不含后缀）。
-- pram.surge_intensity: 强度/功率 0-100。用户说“强/猛/亮/爆闪”则 80-100；“柔和/弱/暗”则 0-30；中等 40-70。
+{field_desc}
 
 【输出要求】
 - 只输出纯 JSON 字符串，不要有任何额外文字、注释或 Markdown 标记。
 - 必须严格符合上述 JSON 结构，字段名和嵌套层级完全一致。
-- 如果用户描述中缺失某些字段信息，请根据常识或默认值合理推测（例如未提及颜色则使用默认 [255,255,255]；未提及强度则 70）。
+- 如果描述中缺失某些字段信息，请根据常识或默认值合理推测。
 
 请直接输出 JSON："""
-
     return prompt
 
-
 def extract_json(response) -> dict:
-    """从大模型响应中提取 JSON 对象。"""
     text = ""
     if response.output:
         for item in response.output:
@@ -90,7 +113,6 @@ def extract_json(response) -> dict:
                     if content_part.type == 'output_text':
                         text += content_part.text
     text = text.strip()
-    # 清理可能的 markdown 代码块标记
     if text.startswith("```json"):
         text = text[7:]
     if text.endswith("```"):
@@ -103,25 +125,21 @@ def extract_json(response) -> dict:
         print(f"❌ JSON 解析失败，原始输出：\n{text}")
         raise
 
-
-async def generate_lightsaber_json(user_description: str) -> dict:
-    """根据用户描述生成光剑控制 JSON。"""
-    prompt = build_json_prompt(user_description)
+async def generate_lightsaber_json(user_description: str, previous_json: dict = None) -> dict:
+    prompt = build_json_prompt(user_description, previous_json)
     print("🎨 正在生成光剑控制 JSON ...")
     response = await async_create_response(
-        model="deepseek-v3-2-251201",   # 可根据需要修改模型
+        model="deepseek-v3-2-251201",
         input_messages=[{"role": "user", "content": prompt}]
     )
     return extract_json(response)
 
-
 async def main():
     parser = argparse.ArgumentParser(description="根据自然语言描述生成光剑控制 JSON")
-    parser.add_argument("--description", type=str, help="直接提供描述文本（例如：'快速红色到蓝色闪烁，重复5次'）")
-    parser.add_argument("--output", type=str, help="输出 JSON 文件路径（不指定则打印到 stdout）")
+    parser.add_argument("--description", type=str, help="直接提供描述文本")
+    parser.add_argument("--output", type=str, help="输出 JSON 文件路径")
     args = parser.parse_args()
 
-    # 获取用户描述
     if args.description:
         user_desc = args.description
     else:
@@ -152,7 +170,6 @@ async def main():
     except Exception as e:
         print(f"❌ 生成失败: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

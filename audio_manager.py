@@ -79,7 +79,7 @@ class DialogSession:
         self.mac_address = None
         self.history_summary = None
         self.custom_start_session_req = copy.deepcopy(config.start_session_req)
-        self.current_milestone = 1   # 新增：当前设备所处的里程碑
+        self.current_milestone = 1
 
         self.current_audio_buffer = b''
         self.is_audio_accumulating = False
@@ -161,7 +161,6 @@ class DialogSession:
 
             self.current_audio_buffer += audio_data
 
-            # 转发音频到单片机
             if self.real_time_sending and self.esp_server and hasattr(self.esp_server, 'active_connections'):
                 self.accumulated_buffer += audio_data
                 while len(self.accumulated_buffer) >= 960:
@@ -214,7 +213,6 @@ class DialogSession:
                             print(f"用户说: {user_text}")
                             if self.db_manager and self.mac_address:
                                 await self.db_manager.add_message(self.mac_address, 'user', user_text, self.current_milestone)
-                                asyncio.create_task(self._try_auto_analysis())
 
             if event == 351:
                 text = payload_msg.get('text', '')
@@ -223,7 +221,6 @@ class DialogSession:
                     print(f"AI 回复: {full_reply}")
                     if self.db_manager and self.mac_address:
                         await self.db_manager.add_message(self.mac_address, 'AI', full_reply, self.current_milestone)
-                        asyncio.create_task(self._try_auto_analysis())
                     self.current_reply_text = ''
 
             if event == 459:
@@ -449,7 +446,6 @@ class DialogSession:
             self.is_processing_audio = False
 
     async def update_current_milestone(self, milestone: int):
-        """外部调用，更新当前里程碑"""
         self.current_milestone = milestone
         if self.db_manager and self.mac_address:
             await self.db_manager.update_device_current_milestone(self.mac_address, milestone)
@@ -464,19 +460,9 @@ class DialogSession:
                 print(f"✅ 已获取 MAC 地址: {self.mac_address}")
 
             if self.db_manager and self.mac_address:
-                # 获取当前里程碑
                 self.current_milestone = await self.db_manager.get_device_current_milestone(self.mac_address)
                 print(f"📌 当前里程碑: {self.current_milestone}")
-
-                summary = await self.db_manager.get_latest_summary_by_mac(self.mac_address)
-                if summary:
-                    self.history_summary = summary
-                    original_role = self.custom_start_session_req["dialog"]["system_role"]
-                    enhanced_role = f"{original_role}\n\n【历史对话记忆】\n{summary}\n\n请根据以上历史记忆继续与小朋友自然对话。"
-                    self.custom_start_session_req["dialog"]["system_role"] = enhanced_role
-                    print(f"✅ 已加载历史摘要，长度 {len(summary)} 字符")
-                else:
-                    print("ℹ️ 未找到历史摘要，将作为新对话开始")
+                # 不再加载历史摘要，保持纯净的对话
 
             await self.client.connect()
 

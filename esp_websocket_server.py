@@ -51,7 +51,6 @@ except ImportError as e:
     logger.error(f"❌ OpusLib导入失败: {e}")
     sys.exit(1)
 
-# 导入语音识别和光剑JSON生成函数
 from speech_recognizer import recognize_audio
 from lightsaber_json import generate_lightsaber_json
 
@@ -61,13 +60,11 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️  Protocol模块导入失败: {e}")
 
-# ==================== 音频参数 ====================
 OPUS_SAMPLE_RATE = 16000
 OPUS_CHANNELS = 1
 OPUS_FRAME_DURATION_MS = 60
 OPUS_FRAME_SAMPLES = OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION_MS // 1000
 
-# ==================== 数据类 ====================
 @dataclass
 class AudioConfig:
     sample_rate: int = 16000
@@ -168,6 +165,9 @@ class ESPWebSocketServer:
         self.mac_to_websocket = {}
         self.milestone_sessions = {}
 
+        # 新增：存储每个设备上一次生成的光效JSON
+        self.mac_to_last_json = {}
+
         logger.info("✅ ESP WebSocket服务器初始化完成")
 
     def _create_ssl_context(self):
@@ -210,7 +210,6 @@ class ESPWebSocketServer:
         self.active_connections.add(websocket)
         client_info = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
         logger.info(f"🔌 新ESP设备连接: {client_info}")
-        # 初始化命令模式状态
         websocket.command_mode_active = False
         try:
             await websocket.send(json.dumps({
@@ -225,6 +224,9 @@ class ESPWebSocketServer:
         except Exception as e:
             logger.error(f"❌ 处理连接错误: {e}")
         finally:
+            # 清理该设备的相关数据
+            if hasattr(websocket, 'mac') and websocket.mac in self.mac_to_last_json:
+                del self.mac_to_last_json[websocket.mac]
             if hasattr(websocket, 'mac') and websocket.mac in self.mac_to_websocket:
                 del self.mac_to_websocket[websocket.mac]
             self.active_connections.discard(websocket)
@@ -243,7 +245,6 @@ class ESPWebSocketServer:
             logger.error(f"❌ 处理消息错误: {e}")
             await self._send_error_response(websocket, "处理消息时出错")
 
-    # ==================== 分块发送音频文件 ====================
     async def _send_audio_chunked(self, websocket: websockets.WebSocketServerProtocol, file_path: str,
                                 chunk_size: int = 960, delay: float = 0.2) -> bool:
         try:
@@ -284,9 +285,7 @@ class ESPWebSocketServer:
                 pass
             return False
 
-    # ==================== 辅助：保存 PCM 为 WAV ====================
     def _save_pcm_to_wav(self, pcm_data: bytes, wav_path: Path, sample_rate=16000, channels=1, bits_per_sample=16):
-        """将 PCM 数据保存为 WAV 文件"""
         byte_rate = sample_rate * channels * bits_per_sample // 8
         block_align = channels * bits_per_sample // 8
         data_size = len(pcm_data)
@@ -306,11 +305,9 @@ class ESPWebSocketServer:
             f.write(struct.pack('<I', data_size))
             f.write(pcm_data)
 
-    # ==================== 音频数据处理 ====================
     async def _handle_audio_data(self, websocket: websockets.WebSocketServerProtocol, data: bytes) -> None:
         mac = getattr(websocket, 'mac', None)
 
-        # JPEG 图片处理（里程碑拍照）
         if len(data) >= 2 and data[0] == 0xFF and data[1] == 0xD8:
             if mac and mac in self.milestone_sessions:
                 sess = self.milestone_sessions[mac]
@@ -341,7 +338,6 @@ class ESPWebSocketServer:
                 await self._send_error_response(websocket, "图片保存失败")
             return
 
-        # 解析自定义帧头
         is_valid, msg, header, payload = self.frame_parser.parse_frame_header(data)
         if not is_valid:
             logger.warning(f"❌ 帧校验失败: {msg}")
@@ -352,11 +348,9 @@ class ESPWebSocketServer:
             logger.warning(f"⚠️  帧序号不连续（上一帧{self.last_frame_sequence}，当前帧{header.sequence}）")
         self.last_frame_sequence = header.sequence
 
-        # 命令模式：累积 PCM 数据
         if getattr(websocket, 'command_mode_active', False):
             pcm_data = self.opus_decoder.decode(payload, self.audio_config.chunk_size)
             if pcm_data:
-                # 确保有 buffer 属性
                 if not hasattr(websocket, 'command_audio_buffer'):
                     websocket.command_audio_buffer = bytearray()
                 websocket.command_audio_buffer.extend(pcm_data)
@@ -365,7 +359,6 @@ class ESPWebSocketServer:
                 logger.warning("命令模式 Opus 解码失败，丢弃该帧")
             return
 
-        # 里程碑收集（原有）
         if mac and mac in self.milestone_sessions:
             sess = self.milestone_sessions[mac]
             if sess.get('collecting_audio'):
@@ -375,7 +368,6 @@ class ESPWebSocketServer:
                 logger.debug(f"收集音频包: +{len(payload)} 字节，总包数 {len(sess['audio_packets'])}")
                 return
 
-        # 对话转发（原有）
         pcm_data = self.opus_decoder.decode(payload, self.audio_config.chunk_size)
         if pcm_data is not None:
             if self.dialog_session and hasattr(self.dialog_session, 'client') and not self.dialog_session.is_session_finished:
@@ -403,16 +395,13 @@ class ESPWebSocketServer:
             logger.error(f"保存图片失败 {filepath}: {e}")
             return None
 
-    # ==================== 文本消息处理 ====================
     async def _handle_text_message(self, websocket: websockets.WebSocketServerProtocol, message: str) -> None:
         logger.info(f"📩 收到文本消息: {message}")
         try:
             msg_data = json.loads(message)
             msg_type = msg_data.get('type')
 
-            # 命令模式控制
             if msg_type == 'recording_start':
-                # 清空之前的命令音频缓冲
                 websocket.command_mode_active = True
                 websocket.command_audio_buffer = bytearray()
                 logger.info("🎙️ 进入命令录音模式，开始收集音频")
@@ -425,21 +414,18 @@ class ESPWebSocketServer:
                     return
                 websocket.command_mode_active = False
                 logger.info("🔚 命令录音结束，开始处理音频...")
-                # 处理收集到的音频
                 pcm_data = getattr(websocket, 'command_audio_buffer', None)
                 if pcm_data:
                     asyncio.create_task(self._process_command_audio(websocket, pcm_data))
                 else:
                     logger.warning("未收集到任何音频数据")
                     await websocket.send(json.dumps({"error": "no audio data"}))
-                # 清理临时属性
                 try:
                     del websocket.command_audio_buffer
                 except AttributeError:
                     pass
                 return
 
-            # 原有里程碑消息处理
             if msg_type and (msg_type.startswith('milestones_anwser_') or
                              msg_type.startswith('anwser_question_') or
                              msg_type.startswith('end_anwser_question_')):
@@ -462,63 +448,57 @@ class ESPWebSocketServer:
         except json.JSONDecodeError:
             await self._handle_chat_message(websocket, message)
 
-    # ==================== 命令音频处理（语音识别 + JSON 生成） ====================
+    # 核心：处理命令音频，包含上下文
     async def _process_command_audio(self, websocket: websockets.WebSocketServerProtocol, pcm_data: bytes):
-        """
-        处理命令录音：保存 WAV，检测音量，识别文字，生成 JSON，发回单片机
-        """
         try:
-            # 1. 创建保存目录（固定目录，便于调试）
+            # 1. 保存 PCM 和 WAV（调试）
             debug_dir = Path("command_audio")
             debug_dir.mkdir(exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             pcm_path = debug_dir / f"cmd_{timestamp}.pcm"
             wav_path = debug_dir / f"cmd_{timestamp}.wav"
-
-            # 保存原始 PCM（16bit, 单声道, 16000Hz）
             with open(pcm_path, "wb") as f:
                 f.write(pcm_data)
-            logger.info(f"📁 保存 PCM: {pcm_path} ({len(pcm_data)} bytes)")
-
-            # 转换为 WAV 并保存
             with wave.open(str(wav_path), 'wb') as wf:
                 wf.setnchannels(1)
-                wf.setsampwidth(2)   # 16bit
+                wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(pcm_data)
-            logger.info(f"📁 保存 WAV: {wav_path}")
+            logger.info(f"📁 保存 PCM: {pcm_path}, WAV: {wav_path}")
 
-            # 2. 检测音频振幅（简单判断是否有有效语音）
-            # 需要安装 numpy: pip install numpy
+            # 2. 音量检测（可选）
             try:
                 import numpy as np
                 samples = np.frombuffer(pcm_data, dtype=np.int16)
                 max_amp = np.max(np.abs(samples))
-                rms = np.sqrt(np.mean(samples.astype(np.float32)**2))
-                logger.info(f"🎚️ 音频振幅: max={max_amp}, RMS={rms:.1f}")
-                if max_amp < 200:   # 阈值可调整
+                if max_amp < 200:
                     logger.warning("音量过低，可能无有效语音")
                     await websocket.send(json.dumps({"error": "no speech detected (too quiet)"}))
                     return
             except ImportError:
-                logger.warning("未安装 numpy，跳过音量检测")
+                pass
 
-            # 3. 调用语音识别
-            from speech_recognizer import recognize_audio
-            text = recognize_audio(str(wav_path))   # 注意 recognize_audio 需要文件路径
+            # 3. 语音识别
+            text = recognize_audio(str(wav_path))
             if not text:
                 logger.warning("语音识别结果为空")
                 await websocket.send(json.dumps({"error": "no speech recognized"}))
                 return
-
             logger.info(f"🎤 识别文字: {text}")
 
-            # 4. 生成光剑控制 JSON
-            from lightsaber_json import generate_lightsaber_json
-            json_obj = await generate_lightsaber_json(text)
+            # 4. 获取该设备上一次生成的 JSON（上下文）
+            mac = getattr(websocket, 'mac', None)
+            previous_json = self.mac_to_last_json.get(mac) if mac else None
 
-            # 5. 发回单片机
-            response_str = json.dumps(json_obj, ensure_ascii=False)
+            # 5. 生成光剑控制 JSON（带上下文）
+            new_json = await generate_lightsaber_json(text, previous_json)
+
+            # 6. 存储新 JSON 供后续修改
+            if mac:
+                self.mac_to_last_json[mac] = new_json
+
+            # 7. 发回单片机
+            response_str = json.dumps(new_json, ensure_ascii=False)
             await websocket.send(response_str)
             logger.info(f"✅ 已发送控制 JSON 到单片机: {response_str[:200]}")
 
@@ -529,7 +509,7 @@ class ESPWebSocketServer:
             except:
                 pass
 
-    # ==================== 原有里程碑、设备信息等处理 ====================
+    # 以下为里程碑、设备信息等原有方法，保持不变
     async def _handle_milestone_text(self, websocket: websockets.WebSocketServerProtocol, mac: str, msg_data: dict):
         msg_type = msg_data.get('type')
         if not msg_type:
@@ -562,7 +542,7 @@ class ESPWebSocketServer:
                 return
             sess['collecting_audio'] = True
             sess['current_question_num'] = question_num
-            sess['audio_packets'] = []   # 存储 Opus 帧
+            sess['audio_packets'] = []
             logger.info(f"开始收集问题 {question_num} 的音频回答")
             return
 
@@ -588,7 +568,6 @@ class ESPWebSocketServer:
             logger.info(f"收集到 {total_frames} 个 Opus 包，预计音频时长 {duration_sec:.2f} 秒")
 
             if opus_packets:
-                # 解码所有 Opus 包为 PCM
                 pcm_data = bytearray()
                 decode_success_count = 0
                 for idx, opus_frame in enumerate(opus_packets):

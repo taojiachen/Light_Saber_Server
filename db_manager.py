@@ -63,7 +63,6 @@ class AsyncMySQLManager:
                 await cur.execute(sql, args)
                 return await cur.fetchall()
 
-    # ==================== 建表 ====================
     async def init_tables(self):
         statements = [
             """CREATE TABLE IF NOT EXISTS `groups` (
@@ -94,7 +93,7 @@ class AsyncMySQLManager:
                 milestone_number INT NOT NULL COMMENT '里程碑序号',
                 assessment_goal TEXT COMMENT '考核目标',
                 assessment_evaluation TEXT COMMENT '考核评价',
-                child_answer_text TEXT COMMENT '儿童回答文本',          -- 新增字段
+                child_answer_text TEXT COMMENT '儿童回答文本',
                 task_completion_image_url VARCHAR(500) COMMENT '任务完成验收图片URL',
                 assessment_audio_url VARCHAR(500) COMMENT '考核指标音频URL',
                 child_learning_ai_drawing_url VARCHAR(500) COMMENT '儿童学习成果AI绘图URL',
@@ -228,9 +227,8 @@ class AsyncMySQLManager:
             (count, device['id'])
         )
 
-    # ==================== 任务统计 ====================
+    # ==================== 任务统计（保留默认） ====================
     async def get_task_statistics(self, mac: str) -> Dict[str, Any]:
-        # 临时默认值
         return {
             "avg_health": 100,
             "avg_satiety": 100,
@@ -286,8 +284,4 @@ class AsyncMySQLManager:
     async def get_recent_messages_by_device(self, mac: str, limit: int = 100) -> List[Dict[str, Any]]:
         return await self.get_recent_messages(mac, limit)
 
-    async def get_latest_summary_by_mac(self, mac: str) -> Optional[str]:
-        return None
-
-    async def update_conversation_summary(self, conv_id: int, summary: str):
-        pass
+    # 移除摘要相关方法（get_latest_summary_by_mac, update_summary 等）

@@ -1,5 +1,5 @@
 pyaudio
-websockets
+websockets==10.4
 dataclasses==0.8; python_version < "3.7"
 typing-extensions==4.7.1; python_version < "3.8"
 opuslib==3.0.1
