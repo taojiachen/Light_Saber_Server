@@ -6,7 +6,8 @@ import config
 from audio_manager import DialogSession
 from esp_websocket_server import ESPWebSocketServer
 from db_manager import AsyncMySQLManager
-import ip_shadow_updater   # 新增 IP 影子监控模块
+import ip_shadow_updater
+from http_server import start_http_server   # 新增导入 HTTP 服务器启动函数
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Real-time Dialog Client")
@@ -65,12 +66,16 @@ async def main() -> None:
     # 启动 IP 影子监控（每 60 秒检查一次）
     ip_monitor_task = asyncio.create_task(ip_shadow_updater.start_ip_shadow_monitor(60))
 
-    # 同时运行 ESP 服务器、对话客户端和 IP 监控
+    # 启动 HTTP 服务器（监听 8081 端口，提供 /media/list 和 /media/{filename} 接口）
+    http_task = asyncio.create_task(start_http_server(host='0.0.0.0', port=8081))
+
+    # 同时运行 ESP 服务器、对话客户端、IP 监控和 HTTP 服务器
     try:
         await asyncio.gather(
             start_server(),
             start_client(),
             ip_monitor_task,
+            http_task,
             return_exceptions=True
         )
     finally:
